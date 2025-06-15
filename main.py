@@ -7,18 +7,19 @@ from fastapi.middleware.cors import CORSMiddleware
 import qrcode
 import io
 import base64
+import os
 
-app = FastAPI()
+app = FastAPI(title="PromptPay QR Generator", version="1.0.0")
 
 # ตั้งค่า templates
 templates = Jinja2Templates(directory="templates")
 
-# CORS (สำหรับ frontend ที่รันจาก origin อื่น เช่น 127.0.0.1:5500)
+# CORS (สำหรับ production)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ปรับให้ปลอดภัยหาก deploy จริง เช่น allow_origins=["http://localhost:5500"]
+    allow_origins=["*"],  # ในการใช้งานจริง ควรระบุ domain ที่ชัดเจน
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -27,13 +28,16 @@ class PromptPayRequest(BaseModel):
     amount: Optional[float] = None
 
 def format_promptpay_id(raw_id: str) -> str:
+    # ลบช่องว่างและตัวอักษรที่ไม่ใช่ตัวเลข
+    clean_id = ''.join(filter(str.isdigit, raw_id))
+    
     # เบอร์โทร (10 หลัก) -> แปลงเป็น format พร้อมเพย์
-    if raw_id.startswith("0") and len(raw_id) == 10:
-        return "0066" + raw_id[1:]
-    elif len(raw_id) == 13:
-        return raw_id  # บัตรประชาชน
+    if clean_id.startswith("0") and len(clean_id) == 10:
+        return "0066" + clean_id[1:]
+    elif len(clean_id) == 13:
+        return clean_id  # บัตรประชาชน
     else:
-        raise ValueError("รหัสพร้อมเพย์ไม่ถูกต้อง")
+        raise ValueError("รหัสพร้อมเพย์ไม่ถูกต้อง: ต้องเป็นเบอร์โทรศัพท์ 10 หลัก (เริ่มด้วย 0) หรือเลขบัตรประชาชน 13 หลัก")
 
 def calculate_crc(payload: str) -> str:
     crc = 0xFFFF
@@ -85,8 +89,16 @@ async def show_index(request: Request):
 @app.post("/qr_cre")
 async def generate_qr(data: PromptPayRequest):
     try:
-        payload = generate_payload(data.id_value, data.amount)
+        # ตรวจสอบข้อมูล
+        if not data.id_value or not data.id_value.strip():
+            raise HTTPException(status_code=400, detail="กรุณากรอกเบอร์โทรศัพท์หรือเลขบัตรประชาชน")
+        
+        if data.amount is not None and data.amount <= 0:
+            raise HTTPException(status_code=400, detail="จำนวนเงินต้องมากกว่า 0")
+            
+        payload = generate_payload(data.id_value.strip(), data.amount)
         base64_img = create_promptpay_qr_base64(payload)
+        
         return JSONResponse(content={
             "status": "success",
             "qr_code_base64": base64_img
@@ -95,3 +107,13 @@ async def generate_qr(data: PromptPayRequest):
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail="ไม่สามารถสร้าง QR ได้: " + str(e))
+
+# Health check endpoint สำหรับ deployment
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "message": "PromptPay QR Generator is running"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
