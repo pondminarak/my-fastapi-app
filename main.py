@@ -1,44 +1,41 @@
-import os
-from fastapi import FastAPI, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import qrcode
 import io
 import base64
 
-app = FastAPI(title="PromptPay QR Generator", version="1.0.0")
+app = FastAPI()
 
-# CORS middleware
+# ตั้งค่า templates
+templates = Jinja2Templates(directory="templates")
+
+# CORS (สำหรับ frontend ที่รันจาก origin อื่น เช่น 127.0.0.1:5500)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # ปรับให้ปลอดภัยหาก deploy จริง เช่น allow_origins=["http://localhost:5500"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 class PromptPayRequest(BaseModel):
     id_value: str
     amount: Optional[float] = None
 
 def format_promptpay_id(raw_id: str) -> str:
-    """แปลงเบอร์โทรหรือบัตรประชาชนเป็น format พร้อมเพย์"""
+    # เบอร์โทร (10 หลัก) -> แปลงเป็น format พร้อมเพย์
     if raw_id.startswith("0") and len(raw_id) == 10:
         return "0066" + raw_id[1:]
     elif len(raw_id) == 13:
-        return raw_id
+        return raw_id  # บัตรประชาชน
     else:
         raise ValueError("รหัสพร้อมเพย์ไม่ถูกต้อง")
 
 def calculate_crc(payload: str) -> str:
-    """คำนวณ CRC16 สำหรับ QR payload"""
     crc = 0xFFFF
     poly = 0x1021
     for byte in payload.encode('ascii'):
@@ -51,48 +48,42 @@ def calculate_crc(payload: str) -> str:
     return format(crc, '04X')
 
 def generate_payload(id_value: str, amount: Optional[float] = None) -> str:
-    """สร้าง payload สำหรับ QR Code พร้อมเพย์"""
     id_formatted = format_promptpay_id(id_value)
     gui = "A000000677010111"
     acc = f"0016{gui}0113{id_formatted}"
-
-    payload = "000201"
-    payload += "010212"
-    payload += f"29{len(acc):02d}{acc}"
-    payload += "5802TH"
-    payload += "5303764"
-
+    
+    payload = "000201"          # Payload Format Indicator
+    payload += "010212"         # Point of Initiation Method (Dynamic)
+    
+    payload += f"29{len(acc):02d}{acc}"  # Merchant Account Information
+    
+    payload += "5802TH"         # Country Code
+    payload += "5303764"        # Currency (764 = THB)
+    
     if amount is not None:
         amt = f"{amount:.2f}"
-        payload += f"54{len(amt):02d}{amt}"
-
-    payload += "6304"
+        payload += f"54{len(amt):02d}{amt}"  # Transaction amount
+    
+    payload += "6304"           # CRC Placeholder
     crc = calculate_crc(payload)
-    payload += crc
-
+    payload += crc              # Append CRC
+    
     return payload
 
 def create_promptpay_qr_base64(payload: str) -> str:
-    """สร้าง QR Code และแปลงเป็น base64"""
     img = qrcode.make(payload)
     buffered = io.BytesIO()
     img.save(buffered, format="PNG")
     img_bytes = buffered.getvalue()
     return base64.b64encode(img_bytes).decode("utf-8")
 
-@app.get("/")
-async def read_index():
-    """Serve หน้าแรก"""
-    return FileResponse('app/static/index.html')
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {"status": "healthy"}
+# หน้าเว็บหลัก
+@app.get("/", response_class=HTMLResponse)
+async def show_index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/qr_cre")
 async def generate_qr(data: PromptPayRequest):
-    """API สำหรับสร้าง QR Code พร้อมเพย์"""
     try:
         payload = generate_payload(data.id_value, data.amount)
         base64_img = create_promptpay_qr_base64(payload)
@@ -104,8 +95,3 @@ async def generate_qr(data: PromptPayRequest):
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         raise HTTPException(status_code=500, detail="ไม่สามารถสร้าง QR ได้: " + str(e))
-
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
