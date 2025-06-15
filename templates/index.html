@@ -233,6 +233,23 @@
             display: none;
         }
 
+        .download-btn {
+            margin-top: 15px;
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+        }
+
+        .download-btn:hover {
+            background: #218838;
+            transform: translateY(-2px);
+        }
+
         @media (max-width: 480px) {
             .container {
                 padding: 25px;
@@ -246,6 +263,33 @@
             input {
                 padding: 12px 15px;
             }
+        }
+
+        .feature-list {
+            background: rgba(102, 126, 234, 0.05);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .feature-list ul {
+            list-style: none;
+            color: #555;
+            font-size: 14px;
+        }
+
+        .feature-list li {
+            margin-bottom: 5px;
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .feature-list li:before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: #667eea;
+            font-weight: bold;
         }
     </style>
 </head>
@@ -291,10 +335,14 @@
             <div class="qr-wrapper">
                 <img id="qr-image" src="" alt="QR Code พร้อมเพย์">
             </div>
+            <button class="download-btn" onclick="downloadQR()">💾 ดาวน์โหลด QR Code</button>
         </div>
     </div>
 
     <script>
+        // กำหนด API URL - แก้ไขตามโดเมนที่ deploy จริง
+        const API_URL = window.location.origin;
+
         document.getElementById('qr-form').addEventListener('submit', function(e) {
             e.preventDefault();
             SubmitNumber();
@@ -303,10 +351,16 @@
         function SubmitNumber() {
             const id_value = document.getElementById("id_value").value.trim();
             const rawAmount = document.getElementById("amount").value;
-            const amount = rawAmount ? parseFloat(rawAmount) : undefined;
+            const amount = rawAmount ? parseFloat(rawAmount) : null;
             
             if (!id_value) {
                 showError("กรุณากรอกเบอร์โทรศัพท์หรือเลขบัตรประชาชน");
+                return;
+            }
+
+            // ตรวจสอบรูปแบบเบอร์โทรหรือบัตรประชาชน
+            if (!isValidPhoneOrId(id_value)) {
+                showError("กรุณากรอกเบอร์โทรศัพท์ 10 หลัก (เริ่มต้นด้วย 0) หรือเลขบัตรประชาชน 13 หลัก");
                 return;
             }
 
@@ -322,15 +376,24 @@
             hideError();
             hideQR();
 
-            // ใช้ window.location.origin แทน localhost
-            fetch(window.location.origin + "/qr_cre", {
+            const requestData = { id_value: id_value };
+            if (amount !== null && amount > 0) {
+                requestData.amount = amount;
+            }
+
+            fetch(`${API_URL}/qr_cre`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json"
                 },
-                body: JSON.stringify({ id_value: id_value, amount: amount })
+                body: JSON.stringify(requestData)
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => Promise.reject(err));
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.status === "success") {
                     const img = document.getElementById("qr-image");
@@ -342,7 +405,11 @@
             })
             .catch(error => {
                 console.error("Error:", error);
-                showError("เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง");
+                let errorMessage = "เกิดข้อผิดพลาดในการเชื่อมต่อ กรุณาลองใหม่อีกครั้ง";
+                if (error.detail) {
+                    errorMessage = error.detail;
+                }
+                showError(errorMessage);
             })
             .finally(() => {
                 // Reset button state
@@ -350,6 +417,15 @@
                 btnText.style.display = "inline";
                 loading.style.display = "none";
             });
+        }
+
+        function isValidPhoneOrId(value) {
+            // ตรวจสอบเบอร์โทรศัพท์ (10 หลัก เริ่มด้วย 0)
+            const phonePattern = /^0\d{9}$/;
+            // ตรวจสอบเลขบัตรประชาชน (13 หลัก)
+            const idPattern = /^\d{13}$/;
+            
+            return phonePattern.test(value) || idPattern.test(value);
         }
 
         function showError(message) {
@@ -365,6 +441,51 @@
         function hideQR() {
             document.getElementById("qr-container").style.display = "none";
         }
+
+        function downloadQR() {
+            const img = document.getElementById("qr-image");
+            const canvas = document.createElement("canvas");
+            const ctx = canvas.getContext("2d");
+            
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            ctx.drawImage(img, 0, 0);
+            
+            const link = document.createElement("a");
+            link.download = "promptpay-qr-code.png";
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+
+        // Add input animations
+        document.querySelectorAll('input').forEach(input => {
+            input.addEventListener('focus', function() {
+                this.parentElement.style.transform = 'translateY(-2px)';
+            });
+            
+            input.addEventListener('blur', function() {
+                this.parentElement.style.transform = 'translateY(0)';
+            });
+        });
+
+        // เพิ่มการจัดรูปแบบเบอร์โทรศัพท์อัตโนมัติ
+        document.getElementById('id_value').addEventListener('input', function(e) {
+            let value = e.target.value.replace(/\D/g, ''); // เอาตัวที่ไม่ใช่ตัวเลขออก
+            
+            // จำกัดความยาว
+            if (value.length > 13) {
+                value = value.substring(0, 13);
+            }
+            
+            e.target.value = value;
+        });
+
+        // จำกัดจำนวนเงินไม่ให้ติดลบ
+        document.getElementById('amount').addEventListener('input', function(e) {
+            if (parseFloat(e.target.value) < 0) {
+                e.target.value = '';
+            }
+        });
     </script>
 </body>
 </html>
